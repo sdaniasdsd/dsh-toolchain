@@ -72,9 +72,12 @@ foreach ($item in $pptxWheels) {
     Expand-Wheel $wheelPath
 }
 if (!(Test-Path -LiteralPath (Join-Path $runtime 'python/python313._pth'))) { throw 'Python embeddable path file is missing.' }
-# 最后一行是给"运行时被放进 dsh-office 插件包"那种布局用的：从 <pkg>/runtime/win32-x64/python/
-# 往上三级正好是 <pkg>/，插件把 Python 引擎脚本放在 <pkg>/lib/engines/<模块>/ 下。
-# 在独立运行时的布局里这一条指向不存在的目录，Python 会忽略它，不影响使用。
-$pth=@('python313.zip','.','Lib/site-packages','../../../lib/engines/docx-complex-parse','import site')
+# 只列解释器自身的搜索路径，不要在这里写引擎目录。._pth 里的相对路径是相对
+# python.exe 所在目录解析的，而引擎脚本随「核心包」走（lib/engines/<模块>/），
+# 与运行时可以是两棵不同的树：插件布局下 python.exe 在
+# <pkg>/runtime/win32-x64/python/，上三级是运行时包自己，不是插件包。
+# 任何写死的相对路径都会在换一种安装布局后指空。
+# 引擎需要同目录的兄弟模块时，由引擎脚本自己 sys.path.insert(脚本目录)。
+$pth=@('python313.zip','.','Lib/site-packages','import site')
 Set-Content -LiteralPath (Join-Path $runtime 'python/python313._pth') -Value $pth -Encoding ascii
 Write-Host "Offline runtimes are hash-verified and extracted under $runtime"
