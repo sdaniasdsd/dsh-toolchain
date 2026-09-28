@@ -5,19 +5,19 @@
   "components": {
     "python": {
       "present": true,
-      "entry": "python\\python.exe",
+      "entry": "python/python.exe",
       "bytes": 50013265,
       "files": 665
     },
     "libreoffice": {
       "present": true,
-      "entry": "libreoffice\\program\\soffice.com",
+      "entry": "libreoffice/program/soffice.com",
       "bytes": 1577413569,
       "files": 19456
     },
     "poppler": {
       "present": true,
-      "entry": "poppler\\poppler-26.09.0\\Library\\bin\\pdftoppm.exe",
+      "entry": "poppler/poppler-26.09.0/Library/bin/pdftoppm.exe",
       "bytes": 126544679,
       "files": 561
     }

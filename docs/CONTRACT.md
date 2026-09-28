@@ -52,21 +52,23 @@
   "version": "0.9.0",
   "platform": "win32-x64",
   "components": {
-    "python":      { "present": true, "entry": "python\\python.exe",                                        "bytes": 50013265,   "files": 665 },
-    "libreoffice": { "present": true, "entry": "libreoffice\\program\\soffice.com",                          "bytes": 1577413569, "files": 19456 },
-    "poppler":     { "present": true, "entry": "poppler\\poppler-26.09.0\\Library\\bin\\pdftoppm.exe",       "bytes": 126544679,  "files": 561 }
+    "python":      { "present": true, "entry": "python/python.exe",                                        "bytes": 50013265,   "files": 665 },
+    "libreoffice": { "present": true, "entry": "libreoffice/program/soffice.com",                          "bytes": 1577413569, "files": 19456 },
+    "poppler":     { "present": true, "entry": "poppler/poppler-26.09.0/Library/bin/pdftoppm.exe",       "bytes": 126544679,  "files": 561 }
   }
 }
 ```
 
 - 插件只**读**它来做定位（第 3 条解析），不做强制校验；`scripts/verify-runtime.mjs` 才做严格校验。
+- `components.<name>.entry` 必须使用 `/` 作为分隔符，且必须是相对路径。producer 可以在本机把它转换成
+  原生路径访问文件，但写入 `runtime.json` 时不得转换；verifier 按规范化后的 `/` 值严格比较。
 - 换布局/换版本时保持 `schema` 字符串不变、把 `version` 与 `components` 更新即可；
   `platform` 目前只有 `win32-x64`。
 - 运行时包的 `package.json` 声明 `os: ["win32"] / cpu: ["x64"]`；核心包不限定平台。
 
 ## 五、验收清单（接手的人按这个跑）
 
-1. `node scripts/verify-runtime.mjs <runtimeRoot>` —— 12 项全过、退出码 0（二进制版本、5 个 Python 包、体积、`runtime.json`）。
+1. `node scripts/verify-runtime.mjs <runtimeRoot>` —— 所有检查全过、退出码 0（二进制版本、5 个 Python 包、体积、`runtime.json`）。
 2. 打成交接包后，在一个**干净目录**里用两个 `file:` 依赖装核心包与运行时包，确认插件自报
    `runtime source = runtime-package` 且无缺失项（0.9.0 的实测：pnpm install 6m51s，退出码 0）。
 3. 三组真实调用对照（0.9.0 实测结论）：
