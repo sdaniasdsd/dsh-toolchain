@@ -1,0 +1,16 @@
+{
+  "name": "dsh-toolchain",
+  "version": "0.10.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "plan": "node scripts/prepare-runtime.mjs --plan",
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "bootstrap:with-runtime": "node scripts/bootstrap.mjs --with-runtime",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "verify:runtime": "node scripts/verify-runtime.mjs runtime/win32-x64",
+    "pack:runtime": "node scripts/pack-runtime.mjs runtime/win32-x64",
+    "test": "node --test tests/*.test.mjs"
+  }
+}

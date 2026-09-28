@@ -1,83 +1,96 @@
-# 从上游下载并校验运行时（Windows x64），装到本仓库的 runtime/win32-x64/。
-#
-# 这份与 dsh-office 仓库的 scripts/fetch-dsh-runtime.ps1 是同一套配方（同样的 URL 与 sha256），
-# 差别只有两处：目标目录可以用 -RuntimeRoot 指定，默认落在本仓库的 runtime/win32-x64/。
-#
-#   pwsh -File scripts/fetch-runtime.ps1
-#   pwsh -File scripts/fetch-runtime.ps1 -RuntimeRoot D:\somewhere\win32-x64
-#
-# 全部下载都做 sha256 校验；校验失败即抛错，不会把坏文件当好的用。
+# Prepare the Windows x64 DSH Office runtime from the single pinned lock file.
+# This is an environment adapter only: it downloads hash-pinned assets,
+# extracts them into the declared layout, and writes runtime.json. It does not
+# install system software, alter PATH, or start an Agent/service.
 param(
-    [string]$RuntimeRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'runtime/win32-x64')
+    [string]$RuntimeRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) 'runtime/win32-x64'),
+    [string]$ManifestPath = ''
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
+$lock = Get-Content -LiteralPath (Join-Path $repoRoot 'toolchain.lock.json') -Raw | ConvertFrom-Json
+if ($lock.schema -ne 'dsh-office-toolchain/v1') { throw 'Unsupported toolchain lock schema.' }
+$platform = $lock.platforms.'win32-x64'
+if ($null -eq $platform) { throw 'win32-x64 profile is missing from toolchain.lock.json.' }
+$runtime = [IO.Path]::GetFullPath($RuntimeRoot)
+if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
+    $ManifestPath = Join-Path (Split-Path (Split-Path $runtime -Parent) -Parent) 'runtime.json'
+}
 $cache = Join-Path $repoRoot '.build-cache'
-$runtime = $RuntimeRoot
 New-Item -ItemType Directory -Force -Path $cache,$runtime | Out-Null
-function Fetch-Verified($url, $name, $sha256) {
-    $target = Join-Path $cache $name
+
+function Fetch-Verified($artifact) {
+    $target = Join-Path $cache $artifact.name
     $partial = "$target.part"
-    if (!(Test-Path -LiteralPath $target) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha256) {
+    if (!(Test-Path -LiteralPath $target) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $artifact.sha256) {
         if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination "$target.invalid.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))" }
-        & curl.exe --fail --location --ssl-revoke-best-effort --retry 3 --retry-all-errors --continue-at - --connect-timeout 10 --max-time 600 --silent --show-error --output $partial $url
-        if ($LASTEXITCODE -ne 0) { throw "Download failed: $name" }
+        & curl.exe --fail --location --ssl-revoke-best-effort --retry 3 --retry-all-errors --continue-at - --connect-timeout 10 --max-time 600 --silent --show-error --output $partial $artifact.url
+        if ($LASTEXITCODE -ne 0) { throw "Download failed: $($artifact.name)" }
         Move-Item -LiteralPath $partial -Destination $target
     }
-    if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha256) { throw "Checksum mismatch: $name" }
-    Write-Host "Verified $name"
+    if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $artifact.sha256) { throw "Checksum mismatch: $($artifact.name)" }
+    Write-Host "Verified $($artifact.name)"
     return $target
 }
-function Expand-Wheel($wheelPath) {
+function Expand-Wheel($wheelPath, $sitePackages) {
     $archivePath = Join-Path $cache ((Split-Path -Leaf $wheelPath) + '.zip')
     Copy-Item -LiteralPath $wheelPath -Destination $archivePath -Force
     Expand-Archive -LiteralPath $archivePath -DestinationPath $sitePackages -Force
     Remove-Item -LiteralPath $archivePath
 }
-$python = Fetch-Verified 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-embed-amd64.zip' 'python-3.13.15.zip' 'd1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2cf'
-$poppler = Fetch-Verified 'https://github.com/oschwartz10612/poppler-windows/releases/download/v26.09.0-0/Release-26.09.0-0.zip?download=1' 'poppler-26.09.0.zip' '7a6f256a0ddf7536182246a5733331bf4677cbcc34f4663774947ad34556c8d0'
-$office = Fetch-Verified 'https://mirror.clarkson.edu/tdf/libreoffice/stable/26.8.0/win/x86_64/LibreOffice_26.8.0_Win_x86-64.msi' 'LibreOffice_26.8.0_Win_x86-64.msi' '4aa6c6e1895f4055104effcb556bd3362d20c6ad707c149543304f395ef9db95'
-if (!(Test-Path -LiteralPath (Join-Path $runtime 'python/python.exe'))) { Expand-Archive -LiteralPath $python -DestinationPath (Join-Path $runtime 'python') }
-if (!(Test-Path -LiteralPath (Join-Path $runtime 'poppler/poppler-26.09.0/Library/bin/pdftoppm.exe'))) {
+function Measure-Tree($path) {
+    if (!(Test-Path -LiteralPath $path)) { return @{ bytes = 0; files = 0 } }
+    $items = Get-ChildItem -LiteralPath $path -Recurse -File
+    return @{ bytes = [long](($items | Measure-Object -Property Length -Sum).Sum); files = @($items).Count }
+}
+
+$pythonArchive = Fetch-Verified $platform.artifacts.python
+$popplerArchive = Fetch-Verified $platform.artifacts.poppler
+$officeInstaller = Fetch-Verified $platform.artifacts.libreoffice
+$pythonEntry = Join-Path $runtime ($platform.components.python.entry.Replace('/','\'))
+$popplerEntry = Join-Path $runtime ($platform.components.poppler.entry.Replace('/','\'))
+$sofficeEntry = Join-Path $runtime ($platform.components.libreoffice.entry.Replace('/','\'))
+
+if (!(Test-Path -LiteralPath $pythonEntry)) { Expand-Archive -LiteralPath $pythonArchive -DestinationPath (Join-Path $runtime 'python') }
+if (!(Test-Path -LiteralPath $popplerEntry)) {
     New-Item -ItemType Directory -Force -Path (Join-Path $runtime 'poppler') | Out-Null
-    Expand-Archive -LiteralPath $poppler -DestinationPath (Join-Path $runtime 'poppler') -Force
+    Expand-Archive -LiteralPath $popplerArchive -DestinationPath (Join-Path $runtime 'poppler') -Force
 }
-$sofficePortable=Join-Path $runtime 'libreoffice/program/soffice.com'
-if (!(Test-Path -LiteralPath $sofficePortable)) {
-    $officeDir=Join-Path $runtime 'libreoffice'
+if (!(Test-Path -LiteralPath $sofficeEntry)) {
+    $officeDir = Join-Path $runtime 'libreoffice'
     New-Item -ItemType Directory -Force -Path $officeDir | Out-Null
-    $arguments="/a `"$office`" /qn /norestart TARGETDIR=`"$officeDir`""
-    $extractor=Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -WindowStyle Hidden -PassThru
-    if ($extractor.ExitCode -ne 0 -or !(Test-Path -LiteralPath $sofficePortable)) { throw "LibreOffice MSI administrative extraction failed (exit $($extractor.ExitCode))." }
+    $arguments = "/a `"$officeInstaller`" /qn /norestart TARGETDIR=`"$officeDir`""
+    $extractor = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -WindowStyle Hidden -PassThru
+    if ($extractor.ExitCode -ne 0 -or !(Test-Path -LiteralPath $sofficeEntry)) { throw "LibreOffice MSI administrative extraction failed (exit $($extractor.ExitCode))." }
 }
-$installerPayload=Join-Path $runtime 'libreoffice/LibreOffice_26.8.0_Win_x86-64.msi'
+$installerPayload = Join-Path $runtime 'libreoffice/LibreOffice_26.8.0_Win_x86-64.msi'
 if (Test-Path -LiteralPath $installerPayload) { Remove-Item -LiteralPath $installerPayload }
-$wheel=Fetch-Verified 'https://files.pythonhosted.org/packages/8e/63/981401c5680c1eb30893f00a19641ac80db5d1e7086c62cb4b13ed813038/lxml-6.1.0-cp313-cp313-win_amd64.whl' 'lxml-6.1.0-cp313-cp313-win_amd64.whl' '4a1503c56e4e2b38dc76f2f2da7bae69670c0f1933e27cfa34b2fa5876410b16'
-$sitePackages=Join-Path $runtime 'python/Lib/site-packages'
-if (!(Test-Path -LiteralPath (Join-Path $sitePackages 'lxml/__init__.py'))) {
-    New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
-    Expand-Wheel $wheel
-    $dist=Get-ChildItem -LiteralPath $sitePackages -Directory -Filter 'lxml-*.dist-info' | Select-Object -First 1
-    if ($dist -and $dist.Name -ne 'lxml-6.1.0.dist-info') { Move-Item -LiteralPath $dist.FullName -Destination (Join-Path $sitePackages 'lxml-6.1.0.dist-info') }
-}
-$pptxWheels = @(
-    @{ Url='https://files.pythonhosted.org/packages/d9/4f/00be2196329ebbff56ce564aa94efb0fbc828d00de250b1980de1a34ab49/python_pptx-1.0.2-py3-none-any.whl'; Name='python_pptx-1.0.2-py3-none-any.whl'; Sha256='160838e0b8565a8b1f67947675886e9fea18aa5e795db7ae531606d68e785cba' },
-    @{ Url='https://files.pythonhosted.org/packages/a6/9b/7a58e61d62be561da3a356fe2384d4059a6345fc130e23ef1c36a5b81d24/pillow-12.3.0-cp313-cp313-win_amd64.whl'; Name='pillow-12.3.0-cp313-cp313-win_amd64.whl'; Sha256='1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8' },
-    @{ Url='https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl'; Name='xlsxwriter-3.2.9-py3-none-any.whl'; Sha256='9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3' },
-    @{ Url='https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl'; Name='typing_extensions-4.16.0-py3-none-any.whl'; Sha256='481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8' }
-)
+
+$sitePackages = Join-Path $runtime ($platform.python.sitePackages.Replace('/','\'))
 New-Item -ItemType Directory -Force -Path $sitePackages | Out-Null
-foreach ($item in $pptxWheels) {
-    $wheelPath = Fetch-Verified $item.Url $item.Name $item.Sha256
-    Expand-Wheel $wheelPath
+foreach ($wheel in $platform.pythonWheels) { Expand-Wheel (Fetch-Verified $wheel) $sitePackages }
+$pth = Join-Path $runtime ($platform.python.pthFile.Replace('/','\'))
+if (!(Test-Path -LiteralPath $pth)) { throw "Python embeddable path file is missing: $pth" }
+Set-Content -LiteralPath $pth -Value @($platform.python.paths) -Encoding ascii
+
+$components = [ordered]@{}
+foreach ($name in @('python','libreoffice','poppler')) {
+    $component = $platform.components.$name
+    $entry = $component.entry.Replace('/','\')
+    $path = Join-Path $runtime $entry
+    $top = $entry.Split('\')[0]
+    $measure = Measure-Tree (Join-Path $runtime $top)
+    $components[$name] = [ordered]@{ present = (Test-Path -LiteralPath $path); entry = $component.entry; bytes = $measure.bytes; files = $measure.files }
 }
-if (!(Test-Path -LiteralPath (Join-Path $runtime 'python/python313._pth'))) { throw 'Python embeddable path file is missing.' }
-# 只列解释器自身的搜索路径，不要在这里写引擎目录。._pth 里的相对路径是相对
-# python.exe 所在目录解析的，而引擎脚本随「核心包」走（lib/engines/<模块>/），
-# 与运行时可以是两棵不同的树：插件布局下 python.exe 在
-# <pkg>/runtime/win32-x64/python/，上三级是运行时包自己，不是插件包。
-# 任何写死的相对路径都会在换一种安装布局后指空。
-# 引擎需要同目录的兄弟模块时，由引擎脚本自己 sys.path.insert(脚本目录)。
-$pth=@('python313.zip','.','Lib/site-packages','import site')
-Set-Content -LiteralPath (Join-Path $runtime 'python/python313._pth') -Value $pth -Encoding ascii
-Write-Host "Offline runtimes are hash-verified and extracted under $runtime"
+$manifest = [ordered]@{
+    schema = $lock.runtimeManifestSchema
+    version = $lock.runtimeVersion
+    platform = 'win32-x64'
+    components = $components
+    toolchain = [ordered]@{ schema = $lock.schema; version = $lock.version; lock = 'toolchain.lock.json' }
+    note = 'Host-owned offline runtime for DSH Office. Java is optional and host-owned; this package never includes or installs a JDK.'
+}
+New-Item -ItemType Directory -Force -Path (Split-Path $ManifestPath -Parent) | Out-Null
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+Write-Host "Prepared hash-verified runtime at $runtime"
+Write-Host "Wrote manifest at $ManifestPath"

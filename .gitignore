@@ -1,6 +1,8 @@
 # 运行时二进制不入库（1.67 GB）：走 Release 资产，或用 scripts/fetch-runtime.ps1 本地取。
 runtime/
+runtime.json
 .build-cache/
+dist/
 *.tgz
 *.msi
 *.zip
